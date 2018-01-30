@@ -21,24 +21,26 @@
 
 #define STM32F1
 
-#include <libopencm3/stm32/f1/rcc.h>
-#include <libopencm3/stm32/f1/gpio.h>
+#include <libopencm3/stm32/rcc.h>
+#include <libopencm3/stm32/gpio.h>
 #include <libopencm3/stm32/usart.h>
-#include <libopencm3/stm32/f1/flash.h>
-#include <libopencm3/stm32/f1/dma.h>
+#include <libopencm3/stm32/flash.h>
+#include <libopencm3/stm32/dma.h>
 #include <libopencm3/stm32/crc.h>
-#include <libopencm3/stm32/scb.h>
+#include <libopencm3/cm3/scb.h>
 #include "hwdefs.h"
 
 #define PAGE_SIZE 1024
+#define PAGE_WORDS (PAGE_SIZE / 4)
 #define FLASH_START 0x08000000
 #define APP_FLASH_START 0x08001000
+#define BOOTLOADER_MAGIC 0xAA
 
 static void clock_setup(void)
 {
    RCC_CLOCK_SETUP();
 
-	rcc_set_ppre1(RCC_CFGR_PPRE1_HCLK_DIV2);
+   rcc_set_ppre1(RCC_CFGR_PPRE1_HCLK_DIV2);
 
    /* Enable all present GPIOx clocks. (whats with GPIO F and G?)*/
    rcc_peripheral_enable_clock(&RCC_APB2ENR, RCC_APB2ENR_IOPAEN);
@@ -47,10 +49,15 @@ static void clock_setup(void)
    rcc_peripheral_enable_clock(&RCC_APB2ENR, RCC_APB2ENR_IOPDEN);
    rcc_peripheral_enable_clock(&RCC_APB2ENR, RCC_APB2ENR_IOPEEN);
 
-   /* Enable clock for USART1. */
-   #if (HWCONFIG==HWCONFIG_OLIMEX)
+   #ifdef HWCONFIG_OLIMEX
    rcc_peripheral_enable_clock(&RCC_APB1ENR, RCC_APB1ENR_USART3EN);
-   #elif (HWCONFIG == HWCONFIG_SB5COM)
+   #endif
+   #ifdef HWCONFIG_OLIMEX_H107
+   rcc_peripheral_enable_clock(&RCC_APB1ENR, RCC_APB1ENR_USART2EN);
+   rcc_peripheral_enable_clock(&RCC_APB2ENR, RCC_APB2ENR_AFIOEN);
+   gpio_primary_remap(AFIO_MAPR_SWJ_CFG_FULL_SWJ, AFIO_MAPR_USART2_REMAP);
+   #endif
+   #ifdef HWCONFIG_TUMANAKO_KIWIAC
    rcc_peripheral_enable_clock(&RCC_APB2ENR, RCC_APB2ENR_USART1EN);
    #endif
 
@@ -80,12 +87,12 @@ static void usart_setup(void)
 
 static void dma_setup(void *data)
 {
-   DMA1_CPAR3 = (u32)&USART3_DR;
-   DMA1_CMAR3 = (u32)data;
-   DMA1_CCR3 |= DMA_CCR4_MSIZE_8BIT << DMA_CCR4_MSIZE_LSB;
-   DMA1_CCR3 |= DMA_CCR4_PSIZE_8BIT << DMA_CCR4_PSIZE_LSB;
-   DMA1_CCR3 |= DMA_CCR4_MINC;
-   DMA1_CCR3 |= DMA_CCR3_TCIE;
+   DMA1_CPAR3 = (uint32_t)&USART3_DR;
+   DMA1_CMAR3 = (uint32_t)data;
+   DMA1_CCR3 |= DMA_CCR_MSIZE_8BIT;
+   DMA1_CCR3 |= DMA_CCR_PSIZE_8BIT;
+   DMA1_CCR3 |= DMA_CCR_MINC;
+   DMA1_CCR3 |= DMA_CCR_TCIE;
 }
 
 static uint32_t RecvCrc()
@@ -104,7 +111,7 @@ static void WriteFlash(uint32_t addr, uint32_t *pageBuffer)
 {
    flash_erase_page(addr);
 
-   for (int idx = 0; idx < 256; idx++)
+   for (int idx = 0; idx < PAGE_WORDS; idx++)
    {
       flash_program_word(addr + idx * 4, pageBuffer[idx]);
    }
@@ -112,76 +119,90 @@ static void WriteFlash(uint32_t addr, uint32_t *pageBuffer)
 
 void wait(void)
 {
-   for (volatile u32 i = 1 << 20; i > 0; i--);
+   for (volatile uint32_t i = 1 << 20; i > 0; i--);
 }
 
 int main(void)
 {
-   char numPages;
-   uint32_t page_buffer[PAGE_SIZE / 4];
+   uint32_t page_buffer[PAGE_WORDS];
    uint32_t addr = APP_FLASH_START;
 
    clock_setup();
    usart_setup();
    dma_setup(page_buffer);
 
-   usart_send_blocking(TERM_USART, 'S');
    wait();
+   usart_send_blocking(TERM_USART, '2');
+   wait();
+   char magic = usart_recv(TERM_USART);
 
-   numPages = usart_recv(TERM_USART);
-
-   flash_unlock();
-   flash_set_ws(2);
-
-   while (numPages > 0)
+   if (magic == BOOTLOADER_MAGIC)
    {
-      uint32_t recvCrc = 0;
-      CRC_CR |= CRC_CR_RESET;
+      usart_send_blocking(TERM_USART, 'S');
+      wait();
+      char numPages = usart_recv(TERM_USART);
+      flash_unlock();
+      flash_set_ws(2);
 
-      usart_send_blocking(TERM_USART, 'P');
-
-      USART_CR3(TERM_USART) |= USART_CR3_DMAR;
-      DMA1_CNDTR3 = PAGE_SIZE;
-      DMA1_CCR3 |= DMA_CCR4_EN;
-      DMA1_IFCR = DMA_IFCR_CTCIF3;
-
-      while ((DMA1_ISR & DMA_ISR_TCIF3) == 0)
+      while (numPages > 0)
       {
-         wait();
-         usart_send_blocking(TERM_USART, 'R');
+         uint32_t recvCrc = 0;
+         uint32_t timeOut = 1 << 21;
+
+         crc_reset();
+         USART_CR3(TERM_USART) |= USART_CR3_DMAR;
+         DMA1_CNDTR3 = PAGE_SIZE;
+         DMA1_CCR3 |= DMA_CCR_EN;
+         DMA1_IFCR = DMA_IFCR_CTCIF3;
+
+         usart_send_blocking(TERM_USART, 'P');
+
+         while ((DMA1_ISR & DMA_ISR_TCIF3) == 0)
+         {
+            timeOut--;
+
+            //When the buffer is not full after about 200ms
+            //Request the entire page again
+            if (0 == timeOut)
+            {
+               timeOut = 1 << 21;
+               DMA1_CCR3 &= ~DMA_CCR_EN;
+               DMA1_CNDTR3 = PAGE_SIZE;
+               DMA1_CCR3 |= DMA_CCR_EN;
+               usart_send_blocking(TERM_USART, 'T');
+            }
+         }
+
+         DMA1_CCR3 &= ~DMA_CCR_EN;
+         USART_CR3(TERM_USART) &= ~USART_CR3_DMAR;
+
+         uint32_t crc = crc_calculate_block(page_buffer, PAGE_WORDS);
+
+         usart_send_blocking(TERM_USART, 'C');
+         recvCrc = RecvCrc();
+
+         if (crc == recvCrc)
+         {
+            WriteFlash(addr, page_buffer);
+            numPages--;
+            addr += PAGE_SIZE;
+         }
+         else
+         {
+            usart_send_blocking(TERM_USART, 'E');
+         }
       }
 
-      DMA1_CCR3 &= ~DMA_CCR4_EN;
-      USART_CR3(TERM_USART) &= ~USART_CR3_DMAR;
-
-      for (int idx = 0; idx < 256; idx++)
-      {
-         CRC_DR = page_buffer[idx];
-      }
-
-      usart_send_blocking(TERM_USART, 'C');
-      recvCrc = RecvCrc();
-
-
-      if (CRC_DR == recvCrc)
-      {
-         WriteFlash(addr, page_buffer);
-         numPages--;
-         addr += PAGE_SIZE;
-      }
-      else
-      {
-         usart_send_blocking(TERM_USART, 'E');
-      }
+      flash_lock();
    }
 
    usart_send_blocking(TERM_USART, 'D');
+   wait();
    usart_disable(TERM_USART);
 
-   flash_lock();
 
-   void (*app_main)(void) = (void (*)(void)) *(volatile u32*)(APP_FLASH_START + 4);
-	SCB_VTOR = APP_FLASH_START;
+   void (*app_main)(void) = (void (*)(void)) *(volatile uint32_t*)(APP_FLASH_START + 4);
+   SCB_VTOR = APP_FLASH_START;
    app_main();
 
    return 0;

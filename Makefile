@@ -56,8 +56,6 @@ images: $(BINARY)
 	$(Q)$(OBJCOPY) -Obinary $(BINARY) $(BINARY).bin
 	@printf "  OBJCOPY $(BINARY).hex\n"
 	$(Q)$(OBJCOPY) -Oihex $(BINARY) $(BINARY).hex
-#@printf "  OBJCOPY $(BINARY).hex\n"
-#$(Q)$(OBJCOPY) -Oihex $(BINARY) $(BINARY).hex
 #@printf "  OBJCOPY $(BINARY).srec\n"
 #$(Q)$(OBJCOPY) -Osrec $(BINARY) $(BINARY).srec
 #@printf "  OBJDUMP $(BINARY).list\n"
@@ -65,7 +63,7 @@ images: $(BINARY)
 
 $(BINARY): $(OBJS) $(LDSCRIPT)
 	@printf "  LD      $(subst $(shell pwd)/,,$(@))\n"
-	$(Q)$(LD) $(LDFLAGS) -o $(BINARY) $(OBJS) -lopencm3_stm32f1 -lnosys
+	$(Q)$(LD) $(LDFLAGS) -o $(BINARY) $(OBJS) -lopencm3_stm32f1
 
 %.o: %.c Makefile
 	@printf "  CC      $(subst $(shell pwd)/,,$(@))\n"
