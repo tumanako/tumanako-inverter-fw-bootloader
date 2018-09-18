@@ -38,7 +38,12 @@
 		<Unit filename="stm32_loader.ld" />
 		<Extensions>
 			<code_completion />
-			<debugger />
+			<debugger>
+				<search_path add="/home/johu/Projekte/e-umbau/firmware/tumanako-inverter-fw-bootloader/" />
+				<remote_debugging target="Release">
+					<options conn_type="0" serial_baud="115200" ip_address="localhost" ip_port="3333" additional_cmds="monitor reset halt&#x0A;load&#x0A;continue" />
+				</remote_debugging>
+			</debugger>
 			<envvars />
 		</Extensions>
 	</Project>
