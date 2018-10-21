@@ -33,8 +33,7 @@
 
 #define PAGE_SIZE 1024
 #define PAGE_WORDS (PAGE_SIZE / 4)
-#define FLASH_START 0x08000000
-#define APP_FLASH_START 0x08001000
+#define APP_FLASH_START 0x08000000
 #define BOOTLOADER_MAGIC 0xAA
 #define DELAY_100 (1 << 20)
 #define DELAY_200 (1 << 21)
@@ -121,75 +120,90 @@ int main(void)
 {
    uint32_t page_buffer[PAGE_WORDS];
    uint32_t addr = APP_FLASH_START;
+   char magic = 0, numPages = 0;
 
    clock_setup();
    usart_setup();
    dma_setup(page_buffer, PAGE_SIZE);
 
-   wait();
-   usart_send_blocking(TERM_USART, '2');
-   wait();
-   char magic = usart_recv(TERM_USART);
-
-   if (magic == BOOTLOADER_MAGIC)
+   do
    {
-      usart_send_blocking(TERM_USART, 'S');
-      wait();
-      char numPages = usart_recv(TERM_USART);
-      flash_unlock();
-
-      while (numPages > 0)
+      do
       {
-         uint32_t recvCrc = 0;
-         uint32_t timeOut = DELAY_200;
+         usart_send_blocking(TERM_USART, '2');
+         magic = usart_recv(TERM_USART);
+         iwdg_reset();
+         wait();
+      } while (magic != BOOTLOADER_MAGIC);
 
-         crc_reset();
-         dma_setup(page_buffer, PAGE_SIZE);
-         usart_send_blocking(TERM_USART, 'P');
+      usart_send_blocking(TERM_USART, 'S');
+      numPages = usart_recv(TERM_USART);
+   } while (numPages == 0 || numPages > 4);
 
-         while (!dma_get_interrupt_flag(DMA1, USART_DMA_CHAN, DMA_TCIF))
+   flash_unlock();
+
+   while (numPages > 0)
+   {
+      uint32_t recvCrc = 0;
+      uint32_t timeOut = DELAY_200;
+
+      crc_reset();
+      dma_setup(page_buffer, PAGE_SIZE);
+      usart_send_blocking(TERM_USART, 'P');
+
+      while (!dma_get_interrupt_flag(DMA1, USART_DMA_CHAN, DMA_TCIF))
+      {
+         timeOut--;
+
+         //When the buffer is not full after about 200ms
+         //Request the entire page again
+         if (0 == timeOut)
          {
-            timeOut--;
-
-            //When the buffer is not full after about 200ms
-            //Request the entire page again
-            if (0 == timeOut)
-            {
-               timeOut = DELAY_200;
-               dma_setup(page_buffer, PAGE_SIZE);
-               usart_send_blocking(TERM_USART, 'T');
-            }
-            iwdg_reset();
+            timeOut = DELAY_200;
+            dma_setup(page_buffer, PAGE_SIZE);
+            usart_send_blocking(TERM_USART, 'T');
          }
-
-         uint32_t crc = crc_calculate_block(page_buffer, PAGE_WORDS);
-
-         dma_setup(&recvCrc, sizeof(recvCrc));
-         usart_send_blocking(TERM_USART, 'C');
-         while (!dma_get_interrupt_flag(DMA1, USART_DMA_CHAN, DMA_TCIF));
-
-         if (crc == recvCrc)
-         {
-            write_flash(addr, page_buffer);
-            numPages--;
-            addr += PAGE_SIZE;
-         }
-         else
-         {
-            usart_send_blocking(TERM_USART, 'E');
-         }
+         iwdg_reset();
       }
 
-      flash_lock();
+      uint32_t crc = crc_calculate_block(page_buffer, PAGE_WORDS);
+
+      dma_setup(&recvCrc, sizeof(recvCrc));
+      usart_send_blocking(TERM_USART, 'C');
+      while (!dma_get_interrupt_flag(DMA1, USART_DMA_CHAN, DMA_TCIF));
+
+      if (crc == recvCrc)
+      {
+         write_flash(addr, page_buffer);
+         numPages--;
+         addr += PAGE_SIZE;
+      }
+      else
+      {
+         usart_send_blocking(TERM_USART, 'E');
+      }
    }
 
+   flash_lock();
    usart_send_blocking(TERM_USART, 'D');
-   wait();
+   char cmdBuffer[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+   uint8_t startIdx = 0;
+   dma_setup(cmdBuffer, sizeof(cmdBuffer));
+
+   while (cmdBuffer[startIdx + 1] != 'e' ||
+          cmdBuffer[startIdx + 2] != 's' ||
+          cmdBuffer[startIdx + 3] != 'e' ||
+          cmdBuffer[startIdx + 4] != 't')
+   {
+      dma_setup(cmdBuffer, sizeof(cmdBuffer));
+      iwdg_reset();
+      wait();
+
+      for (startIdx = 0; startIdx < (sizeof(cmdBuffer) - 5) && cmdBuffer[startIdx] != 'r'; startIdx++);
+   }
+
+
    usart_disable(TERM_USART);
-
-   void (*app_main)(void) = (void (*)(void)) *(volatile uint32_t*)(APP_FLASH_START + 4);
-   SCB_VTOR = APP_FLASH_START;
-   app_main();
-
+   scb_reset_system();
    return 0;
 }
